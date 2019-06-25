@@ -15,7 +15,7 @@ docker run --name test_name -it -p 8080:8080 nvcnvn/fake_token:1.0.0
     * **AuthTime**: if not set `UnixSecond(now - 1 min)`
     * **UserID**: if not set `UnixNano(now)`
     * **IssueAt**: if not set `UnixSecond(now)`
-    * **Expiration**: if not set `UnixSecond(now)`
+    * **Expiration**: if not set `UnixSecond(now + 1 hour)`
     * **PhoneNumber**: if not set `"+84"+UnixSecond(now)`
 
 ## Config
