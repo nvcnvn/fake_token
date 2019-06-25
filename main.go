@@ -2,15 +2,18 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha1"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"html/template"
 	"io/ioutil"
 	"log"
+	"math/big"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -26,10 +29,12 @@ func main() {
 		port          = os.Getenv("PORT")
 		keysPattern   = os.Getenv("KEYS_PATTERN")
 		tokenTemplate = os.Getenv("TOKEN_TEMPLATE")
+		certNotBefore = os.Getenv("CERT_NOT_BEFORE")
+		certNotAfter  = os.Getenv("CERT_NOT_AFTER")
 	)
 
 	keysMap := loadKeys(keysPattern)
-	http.Handle("/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com", newPublicKeyServer(keysMap))
+	http.Handle("/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com", newPublicKeyServer(keysMap, certNotBefore, certNotAfter))
 	http.Handle("/token", newDummyTokenServer(tokenTemplate, keysMap))
 
 	log.Println("Listening on PORT", port)
@@ -64,21 +69,45 @@ func loadKeys(folder string) map[string]*rsa.PrivateKey {
 }
 
 type publicKeyServer struct {
-	publicKeysMap map[string]string
+	certsMap map[string]string
 }
 
-func newPublicKeyServer(keysMap map[string]*rsa.PrivateKey) *publicKeyServer {
+func newPublicKeyServer(keysMap map[string]*rsa.PrivateKey, certNotBefore, certNotAfter string) *publicKeyServer {
 	s := &publicKeyServer{}
-	s.publicKeysMap = make(map[string]string, len(keysMap))
+	s.certsMap = make(map[string]string, len(keysMap))
 	for keyID, privateKey := range keysMap {
-		asn1Bytes, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+
+		notBefore, err := time.Parse("Jan 2 15:04:05 2006", certNotBefore)
+
+		notAfter, err := time.Parse("Jan 2 15:04:05 2006", certNotAfter)
+
+		serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
+		serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("failed to generate serial number: %s", err)
 		}
 
-		s.publicKeysMap[keyID] = string(pem.EncodeToMemory(&pem.Block{
-			Type:  "PUBLIC KEY",
-			Bytes: asn1Bytes,
+		template := x509.Certificate{
+			SerialNumber: serialNumber,
+			Subject: pkix.Name{
+				Organization: []string{"Acme Co"},
+			},
+			NotBefore: notBefore,
+			NotAfter:  notAfter,
+
+			KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+			ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+			BasicConstraintsValid: true,
+		}
+
+		derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &privateKey.PublicKey, privateKey)
+		if err != nil {
+			log.Fatalf("Failed to create certificate: %s", err)
+		}
+
+		s.certsMap[keyID] = string(pem.EncodeToMemory(&pem.Block{
+			Type:  "CERTIFICATE",
+			Bytes: derBytes,
 		}))
 	}
 	return s
@@ -86,8 +115,8 @@ func newPublicKeyServer(keysMap map[string]*rsa.PrivateKey) *publicKeyServer {
 
 func (s *publicKeyServer) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 	resp.Header().Set("Content-Type", "application/json")
-	resp.Header().Set("Cache-Control", "max-age:86400, public")
-	json.NewEncoder(resp).Encode(s.publicKeysMap)
+	resp.Header().Set("Cache-Control", "public, max-age=86400, must-revalidate, no-transform")
+	json.NewEncoder(resp).Encode(s.certsMap)
 }
 
 type dummyTokenServer struct {

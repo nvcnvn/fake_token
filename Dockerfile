@@ -12,5 +12,7 @@ WORKDIR /app/
 ENV PORT=":8080"
 ENV KEYS_PATTERN="./private_pems/*.pem"
 ENV TOKEN_TEMPLATE="./token.template"
+ENV CERT_NOT_BEFORE="Jan 2 15:04:05 2006"
+ENV CERT_NOT_AFTER="Jan 2 15:04:05 2026"
 COPY --from=builder /app/ .
 ENTRYPOINT [ "./fake_token" ]
