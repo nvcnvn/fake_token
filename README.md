@@ -1,8 +1,10 @@
 This docker image use for testing application using JWT and x509 public key endpoint, something like Google Firebase authentication.  
+Docker repo: https://hub.docker.com/r/nvcnvn/fake_token
 
 ## Usage
 ```sh
-docker run --name test_name -it -p 8080:8080 fake_token:1.0.0
+docker pull nvcnvn/fake_token:1.0.0
+docker run --name test_name -it -p 8080:8080 nvcnvn/fake_token:1.0.0
 ```
 
 * Public key endpoint: http://localhost:8080/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com
