@@ -10,8 +10,8 @@ docker run --name test_name -it -p 8080:8080 nvcnvn/fake_token:1.0.0
 * Cert endpoint: http://localhost:8080/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com
 * Token generate endpoint: http://localhost:8080/token with parameters:  
     * **kid**: specific the key (returned from cert endpoint) for signing, if not set then use a random key to sign
-    * **IssuerPrefix**: usage in token template
-    * **Audience**: usage in token template
+    * **IssuerPrefix**: use in token template, default value can be set in template
+    * **Audience**: use in token template, default value can be set in template
     * **AuthTime**: if not set `UnixSecond(now - 1 min)`
     * **UserID**: if not set `UnixNano(now)`
     * **IssueAt**: if not set `UnixSecond(now)`
