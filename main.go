@@ -27,22 +27,22 @@ import (
 func main() {
 	var (
 		port          = os.Getenv("PORT")
-		keysPattern   = os.Getenv("KEYS_PATTERN")
-		tokenTemplate = os.Getenv("TOKEN_TEMPLATE")
+		keysGlob      = os.Getenv("KEYS_GLOB")
+		tmplsGlob     = os.Getenv("TEMPLATES_GLOB")
 		certNotBefore = os.Getenv("CERT_NOT_BEFORE")
 		certNotAfter  = os.Getenv("CERT_NOT_AFTER")
 	)
 
-	keysMap := loadKeys(keysPattern)
+	keysMap := loadKeys(keysGlob)
 	http.Handle("/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com", newPublicKeyServer(keysMap, certNotBefore, certNotAfter))
-	http.Handle("/token", newDummyTokenServer(tokenTemplate, keysMap))
+	http.Handle("/token", newDummyTokenServer(tmplsGlob, keysMap))
 
 	log.Println("Listening on PORT", port)
 	log.Fatal(http.ListenAndServe(port, nil))
 }
 
-func loadKeys(folder string) map[string]*rsa.PrivateKey {
-	matches, err := filepath.Glob("./private_pems/*.pem")
+func loadKeys(keysGlob string) map[string]*rsa.PrivateKey {
+	matches, err := filepath.Glob(keysGlob)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -120,15 +120,27 @@ func (s *publicKeyServer) ServeHTTP(resp http.ResponseWriter, req *http.Request)
 }
 
 type dummyTokenServer struct {
-	tmpl    *template.Template
+	tmpls   map[string]*template.Template
 	keysMap map[string]*rsa.PrivateKey
 }
 
-func newDummyTokenServer(tmplFile string, keysMap map[string]*rsa.PrivateKey) *dummyTokenServer {
-	return &dummyTokenServer{
-		tmpl:    template.Must(template.ParseFiles(tmplFile)),
+func newDummyTokenServer(tmplsGlob string, keysMap map[string]*rsa.PrivateKey) *dummyTokenServer {
+	names, err := filepath.Glob(tmplsGlob)
+	if err != nil {
+		panic(err)
+	}
+
+	s := &dummyTokenServer{
+		tmpls:   make(map[string]*template.Template),
 		keysMap: keysMap,
 	}
+
+	for _, n := range names {
+		fmt.Println(n)
+		s.tmpls[n] = template.Must(template.ParseFiles(n))
+	}
+
+	return s
 }
 
 func (s *dummyTokenServer) selectKey(id string) (string, *rsa.PrivateKey) {
@@ -143,6 +155,7 @@ func (s *dummyTokenServer) selectKey(id string) (string, *rsa.PrivateKey) {
 
 	return "", nil
 }
+
 func (s *dummyTokenServer) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
 	tokenValue := struct {
 		IssuerPrefix string
@@ -183,8 +196,13 @@ func (s *dummyTokenServer) ServeHTTP(resp http.ResponseWriter, req *http.Request
 		tokenValue.PhoneNumber = strconv.FormatInt(now.Unix(), 10)
 	}
 
+	tmpl, ok := s.tmpls[req.FormValue("template")]
+	if !ok {
+		return
+	}
+
 	var buff bytes.Buffer
-	s.tmpl.Execute(&buff, &tokenValue)
+	tmpl.Execute(&buff, &tokenValue)
 
 	kid, key := s.selectKey(req.FormValue("kid"))
 	header := &jws.StandardHeaders{}
