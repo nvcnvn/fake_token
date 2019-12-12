@@ -13,6 +13,6 @@
                 "{{ .PhoneNumber }}-facebook"
             ]
         },
-        "sign_in_provider": "phonfacebook.come"
+        "sign_in_provider": "facebook.com"
     }
 }
