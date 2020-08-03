@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/lestrrat-go/jwx/jwa"
+	"github.com/lestrrat-go/jwx/jwk"
 	"github.com/lestrrat-go/jwx/jws"
 )
 
@@ -34,8 +35,12 @@ func main() {
 	)
 
 	keysMap := loadKeys(keysGlob)
-	http.Handle("/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com", newPublicKeyServer(keysMap, certNotBefore, certNotAfter))
-	http.Handle("/token", newDummyTokenServer(tmplsGlob, keysMap))
+
+	sv := newDummyTokenServer(tmplsGlob, keysMap)
+
+	http.HandleFunc("/token", sv.FakeToken)
+	http.HandleFunc("/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com", newPublicKeyServer(keysMap, certNotBefore, certNotAfter).ServeHTTP)
+	http.HandleFunc("/jwkset", sv.ServeJWKSet(keysGlob))
 
 	log.Println("Listening on PORT", port)
 	log.Fatal(http.ListenAndServe(port, nil))
@@ -156,7 +161,7 @@ func (s *dummyTokenServer) selectKey(id string) (string, *rsa.PrivateKey) {
 	return "", nil
 }
 
-func (s *dummyTokenServer) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
+func (s *dummyTokenServer) FakeToken(resp http.ResponseWriter, req *http.Request) {
 	tokenValue := struct {
 		IssuerPrefix string
 		Audience     string
@@ -212,4 +217,36 @@ func (s *dummyTokenServer) ServeHTTP(resp http.ResponseWriter, req *http.Request
 		log.Println(err)
 	}
 	resp.Write(k)
+}
+
+func (s *dummyTokenServer) ServeJWKSet(path string) func(w http.ResponseWriter, req *http.Request) {
+	set := jwk.Set{
+		Keys: []jwk.Key{},
+	}
+
+	keysMap := loadKeys(path)
+	for keyID, privateKey := range keysMap {
+		set.Keys = append(set.Keys, convertJWK(privateKey, keyID))
+	}
+
+	header := &jws.StandardHeaders{}
+	header.Set(jwk.KeyIDKey, set.Keys[0].KeyID())
+
+	return func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(&set)
+	}
+}
+
+func convertJWK(privateKey *rsa.PrivateKey, id string) jwk.Key {
+	key, err := jwk.New(&privateKey.PublicKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	key.Set(jwk.KeyIDKey, id)
+	key.Set(jwk.KeyUsageKey, "sig")
+	key.Set(jwk.AlgorithmKey, jwa.RS256)
+
+	return key
 }
