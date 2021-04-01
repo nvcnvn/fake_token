@@ -124,6 +124,28 @@ func (s *publicKeyServer) ServeHTTP(resp http.ResponseWriter, req *http.Request)
 	json.NewEncoder(resp).Encode(s.certsMap)
 }
 
+type TokenPayloadClaims struct {
+	IssuerPrefix string
+	Audience     string
+	AuthTime     string
+	UserID       string
+	IssueAt      string
+	Expiration   string
+	PhoneNumber  string
+	SchoolIDs    []string
+}
+
+func (t *TokenPayloadClaims) ConvertSchoolIDsToHtml() template.HTML {
+	if t.SchoolIDs == nil || len(t.SchoolIDs) == 0 {
+		return "[]"
+	}
+	bytes, err := json.Marshal(t.SchoolIDs)
+	if err != nil {
+		return "[]"
+	}
+	return template.HTML(bytes)
+}
+
 type dummyTokenServer struct {
 	tmpls   map[string]*template.Template
 	keysMap map[string]*rsa.PrivateKey
@@ -162,15 +184,15 @@ func (s *dummyTokenServer) selectKey(id string) (string, *rsa.PrivateKey) {
 }
 
 func (s *dummyTokenServer) FakeToken(resp http.ResponseWriter, req *http.Request) {
-	tokenValue := struct {
-		IssuerPrefix string
-		Audience     string
-		AuthTime     string
-		UserID       string
-		IssueAt      string
-		Expiration   string
-		PhoneNumber  string
-	}{
+
+	err:=req.ParseForm()
+	if err != nil {
+		return
+	}
+
+	arrSchoolIDs :=req.Form["SchoolIDs"]
+
+	tokenValue := TokenPayloadClaims{
 		IssuerPrefix: req.FormValue("IssuerPrefix"),
 		Audience:     req.FormValue("Audience"),
 		AuthTime:     req.FormValue("AuthTime"),
@@ -178,6 +200,7 @@ func (s *dummyTokenServer) FakeToken(resp http.ResponseWriter, req *http.Request
 		IssueAt:      req.FormValue("IssueAt"),
 		Expiration:   req.FormValue("Expiration"),
 		PhoneNumber:  req.FormValue("PhoneNumber"),
+		SchoolIDs:    arrSchoolIDs,
 	}
 
 	now := time.Now()
@@ -250,3 +273,4 @@ func convertJWK(privateKey *rsa.PrivateKey, id string) jwk.Key {
 
 	return key
 }
+
