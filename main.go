@@ -21,28 +21,33 @@ import (
 	"time"
 
 	"github.com/lestrrat-go/jwx/jwa"
+	"github.com/lestrrat-go/jwx/jwk"
 	"github.com/lestrrat-go/jwx/jws"
 )
 
 func main() {
 	var (
 		port          = os.Getenv("PORT")
-		keysPattern   = os.Getenv("KEYS_PATTERN")
-		tokenTemplate = os.Getenv("TOKEN_TEMPLATE")
+		keysGlob      = os.Getenv("KEYS_GLOB")
+		tmplsGlob     = os.Getenv("TEMPLATES_GLOB")
 		certNotBefore = os.Getenv("CERT_NOT_BEFORE")
 		certNotAfter  = os.Getenv("CERT_NOT_AFTER")
 	)
 
-	keysMap := loadKeys(keysPattern)
-	http.Handle("/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com", newPublicKeyServer(keysMap, certNotBefore, certNotAfter))
-	http.Handle("/token", newDummyTokenServer(tokenTemplate, keysMap))
+	keysMap := loadKeys(keysGlob)
+
+	sv := newDummyTokenServer(tmplsGlob, keysMap)
+
+	http.HandleFunc("/token", sv.FakeToken)
+	http.HandleFunc("/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com", newPublicKeyServer(keysMap, certNotBefore, certNotAfter).ServeHTTP)
+	http.HandleFunc("/jwkset", sv.ServeJWKSet(keysGlob))
 
 	log.Println("Listening on PORT", port)
 	log.Fatal(http.ListenAndServe(port, nil))
 }
 
-func loadKeys(folder string) map[string]*rsa.PrivateKey {
-	matches, err := filepath.Glob("./private_pems/*.pem")
+func loadKeys(keysGlob string) map[string]*rsa.PrivateKey {
+	matches, err := filepath.Glob(keysGlob)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -119,16 +124,50 @@ func (s *publicKeyServer) ServeHTTP(resp http.ResponseWriter, req *http.Request)
 	json.NewEncoder(resp).Encode(s.certsMap)
 }
 
+type TokenPayloadClaims struct {
+	IssuerPrefix string
+	Audience     string
+	AuthTime     string
+	UserID       string
+	IssueAt      string
+	Expiration   string
+	PhoneNumber  string
+	SchoolIDs    []string
+}
+
+func (t *TokenPayloadClaims) ConvertSchoolIDsToHtml() template.HTML {
+	if t.SchoolIDs == nil || len(t.SchoolIDs) == 0 {
+		return "[]"
+	}
+	bytes, err := json.Marshal(t.SchoolIDs)
+	if err != nil {
+		return "[]"
+	}
+	return template.HTML(bytes)
+}
+
 type dummyTokenServer struct {
-	tmpl    *template.Template
+	tmpls   map[string]*template.Template
 	keysMap map[string]*rsa.PrivateKey
 }
 
-func newDummyTokenServer(tmplFile string, keysMap map[string]*rsa.PrivateKey) *dummyTokenServer {
-	return &dummyTokenServer{
-		tmpl:    template.Must(template.ParseFiles(tmplFile)),
+func newDummyTokenServer(tmplsGlob string, keysMap map[string]*rsa.PrivateKey) *dummyTokenServer {
+	names, err := filepath.Glob(tmplsGlob)
+	if err != nil {
+		panic(err)
+	}
+
+	s := &dummyTokenServer{
+		tmpls:   make(map[string]*template.Template),
 		keysMap: keysMap,
 	}
+
+	for _, n := range names {
+		fmt.Println(n)
+		s.tmpls[n] = template.Must(template.ParseFiles(n))
+	}
+
+	return s
 }
 
 func (s *dummyTokenServer) selectKey(id string) (string, *rsa.PrivateKey) {
@@ -143,16 +182,17 @@ func (s *dummyTokenServer) selectKey(id string) (string, *rsa.PrivateKey) {
 
 	return "", nil
 }
-func (s *dummyTokenServer) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
-	tokenValue := struct {
-		IssuerPrefix string
-		Audience     string
-		AuthTime     string
-		UserID       string
-		IssueAt      string
-		Expiration   string
-		PhoneNumber  string
-	}{
+
+func (s *dummyTokenServer) FakeToken(resp http.ResponseWriter, req *http.Request) {
+
+	err:=req.ParseForm()
+	if err != nil {
+		return
+	}
+
+	arrSchoolIDs :=req.Form["SchoolIDs"]
+
+	tokenValue := TokenPayloadClaims{
 		IssuerPrefix: req.FormValue("IssuerPrefix"),
 		Audience:     req.FormValue("Audience"),
 		AuthTime:     req.FormValue("AuthTime"),
@@ -160,6 +200,7 @@ func (s *dummyTokenServer) ServeHTTP(resp http.ResponseWriter, req *http.Request
 		IssueAt:      req.FormValue("IssueAt"),
 		Expiration:   req.FormValue("Expiration"),
 		PhoneNumber:  req.FormValue("PhoneNumber"),
+		SchoolIDs:    arrSchoolIDs,
 	}
 
 	now := time.Now()
@@ -183,8 +224,13 @@ func (s *dummyTokenServer) ServeHTTP(resp http.ResponseWriter, req *http.Request
 		tokenValue.PhoneNumber = strconv.FormatInt(now.Unix(), 10)
 	}
 
+	tmpl, ok := s.tmpls[req.FormValue("template")]
+	if !ok {
+		return
+	}
+
 	var buff bytes.Buffer
-	s.tmpl.Execute(&buff, &tokenValue)
+	tmpl.Execute(&buff, &tokenValue)
 
 	kid, key := s.selectKey(req.FormValue("kid"))
 	header := &jws.StandardHeaders{}
@@ -195,3 +241,36 @@ func (s *dummyTokenServer) ServeHTTP(resp http.ResponseWriter, req *http.Request
 	}
 	resp.Write(k)
 }
+
+func (s *dummyTokenServer) ServeJWKSet(path string) func(w http.ResponseWriter, req *http.Request) {
+	set := jwk.Set{
+		Keys: []jwk.Key{},
+	}
+
+	keysMap := loadKeys(path)
+	for keyID, privateKey := range keysMap {
+		set.Keys = append(set.Keys, convertJWK(privateKey, keyID))
+	}
+
+	header := &jws.StandardHeaders{}
+	header.Set(jwk.KeyIDKey, set.Keys[0].KeyID())
+
+	return func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(&set)
+	}
+}
+
+func convertJWK(privateKey *rsa.PrivateKey, id string) jwk.Key {
+	key, err := jwk.New(&privateKey.PublicKey)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	key.Set(jwk.KeyIDKey, id)
+	key.Set(jwk.KeyUsageKey, "sig")
+	key.Set(jwk.AlgorithmKey, jwa.RS256)
+
+	return key
+}
+

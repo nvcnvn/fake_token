@@ -1,0 +1,18 @@
+{
+    "iss": "{{ or .IssuerPrefix "http://fake_firebase:40401" }}/{{ or .Audience "fake_aud" }}",
+    "aud": "{{ or .Audience "fake_aud" }}",
+    "auth_time": {{ .AuthTime }},
+    "user_id": "{{ .UserID }}",
+    "sub": "{{ .UserID }}",
+    "iat": {{ .IssueAt }},
+    "exp": {{ .Expiration }},
+    "phone_number": "+84{{ .PhoneNumber }}",
+    "firebase": {
+        "identities": {
+            "facebook.com": [
+                "{{ .PhoneNumber }}-facebook"
+            ]
+        },
+        "sign_in_provider": "facebook.com"
+    }
+}
